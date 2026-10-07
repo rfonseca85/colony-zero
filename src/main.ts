@@ -34,7 +34,7 @@ import { devConfig } from '@/core/DevConfig';
 import { AssetManager, MODEL_URLS } from '@/core/AssetManager';
 import { scatterEnvironment, ENV_MODEL_URLS } from '@/entities/EnvironmentDecor';
 
-const ENEMY_CAPACITY = 4000;
+const ENEMY_CAPACITY = 220; // each enemy is a real cloned SkinnedMesh+AnimationMixer (see EnemyField) — capacity trades off against per-instance fidelity
 const PROJECTILE_CAPACITY = 2000;
 const TOWER_CAPACITY = 64;
 const WALL_CAPACITY = 64;
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
   rig.scene.add(player.mesh);
 
   const enemies = new EnemyField(ENEMY_CAPACITY, WORLD_SIZE, AssetManager.get(MODEL_URLS.enemy));
-  rig.scene.add(enemies.mesh);
+  rig.scene.add(enemies.root);
 
   const projectiles = new ProjectileField(PROJECTILE_CAPACITY);
   rig.scene.add(projectiles.mesh);

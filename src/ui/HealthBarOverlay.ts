@@ -88,7 +88,7 @@ export class HealthBarOverlay {
     const eCount = enemies.pool.liveCount;
     for (let i = 0; i < eCount; i++) {
       const idx = eAlive[i];
-      const yOffset = enemies.scale[idx] * 1.1 + 0.35;
+      const yOffset = enemies.scale[idx] * 1.6 + 0.3; // character height (1.6 baseline) scaled per-instance, plus a margin above the head
       if (this.project(camera, enemies.posX[idx], yOffset, enemies.posZ[idx])) {
         this.drawBar(20, enemies.hp[idx] / enemies.maxHp[idx], ENEMY_COLOR);
       }

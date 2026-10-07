@@ -34,7 +34,7 @@ const ENEMY_FIELDS: FieldSpec[] = [
   { key: 'enemySpeedMult', label: 'Speed ×', min: 0, max: 5, step: 0.1 },
   { key: 'enemyDamageMult', label: 'Damage ×', min: 0, max: 20, step: 0.1 },
   { key: 'enemySpawnRateMult', label: 'Spawn rate ×', min: 0, max: 20, step: 0.1 },
-  { key: 'maxConcurrentEnemies', label: 'Max alive (0=∞)', min: 0, max: 4000, step: 50 },
+  { key: 'maxConcurrentEnemies', label: 'Max alive (0=∞)', min: 0, max: 220, step: 10 },
 ];
 
 const PROJECTILE_FIELDS: FieldSpec[] = [{ key: 'projectileSpeedMult', label: 'Speed ×', min: 0.1, max: 10, step: 0.1 }];

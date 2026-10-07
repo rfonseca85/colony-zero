@@ -6,22 +6,27 @@ import { WeaponName } from '@/core/AssetManager';
 
 /**
  * One cloned, independently-animated instance of a skinned character GLTF.
- * Shared by Player and TowerField (Phase 1) so both get identical,
- * once-reviewed scaling/weapon/crossfade behavior instead of two divergent
- * copies. Cloning (not instancing) is deliberate: skinned mesh animation
- * needs its own Skeleton + AnimationMixer per instance, which only matters
- * here because tower capacity is small (dozens, not thousands) — enemies
- * stay on the InstancedMesh/placeholder path.
+ * Shared by Player, TowerField, and EnemyField so all three get identical,
+ * once-reviewed scaling/weapon/crossfade behavior instead of divergent
+ * copies — this is deliberately the ONLY rendering path for characters in
+ * the game: real SkinnedMesh + AnimationMixer per instance, never a
+ * flattened/baked approximation, so visual fidelity never degrades.
+ * Cloning (not instancing) is the reason capacities stay in the hundreds
+ * rather than thousands — skinned animation needs its own Skeleton +
+ * AnimationMixer per instance, which is the cost of guaranteeing every
+ * enemy looks exactly as correct as the player does.
  */
 export class AnimatedCharacter {
   readonly root: THREE.Object3D;
+  /** The uniform scale scaleToHeight applied to reach targetHeight — multiply by this before applying further per-spawn size variation. */
+  readonly baseScale: number;
   private mixer: THREE.AnimationMixer;
   private actions = new Map<string, THREE.AnimationAction>();
   private current: THREE.AnimationAction | null = null;
 
-  constructor(gltf: GLTF, targetHeight: number, weapon: WeaponName) {
+  constructor(gltf: GLTF, targetHeight: number, weapon: WeaponName | null) {
     this.root = skeletonClone(gltf.scene);
-    scaleToHeight(this.root, targetHeight);
+    this.baseScale = scaleToHeight(this.root, targetHeight);
     groundAlign(this.root);
     setActiveWeapon(this.root, weapon);
 

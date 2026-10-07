@@ -14,8 +14,8 @@ export function scaleToHeight(root: THREE.Object3D, targetHeight: number): numbe
   return scale;
 }
 
-/** The character rig ships every weapon pre-attached to the hand bone; equipping one is just hiding the rest. Call once per spawn, not per frame. */
-export function setActiveWeapon(root: THREE.Object3D, weapon: WeaponName): void {
+/** The character rig ships every weapon pre-attached to the hand bone; equipping one is just hiding the rest. Pass `null` to hide all of them (bare-handed). Call once per spawn, not per frame. */
+export function setActiveWeapon(root: THREE.Object3D, weapon: WeaponName | null): void {
   root.traverse((o) => {
     if (WEAPON_NAME_SET.has(o.name)) o.visible = o.name === weapon;
   });

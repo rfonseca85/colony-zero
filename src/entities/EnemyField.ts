@@ -1,26 +1,12 @@
 import * as THREE from 'three/webgpu';
-import { rotate, positionLocal, vertexIndex, vec3, ivec2, int, instancedBufferAttribute, textureLoad } from 'three/tsl';
 import { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { ObjectPool } from '@/core/ObjectPool';
 import { SpatialHashGrid } from '@/core/SpatialHashGrid';
 import { ObstacleBuffer } from '@/core/ObstacleBuffer';
-import { collectBodyParts, extractStaticColoredGeometry, groundAlignGeometry, scaleGeometryToHeight } from '@/core/StaticMeshExtractor';
-import { bakeVAT, scaleVATDeltas, VATClipInfo } from '@/core/VATBaker';
-import { WEAPON_NODE_NAMES } from '@/core/AssetManager';
-
-const DUMMY = new THREE.Object3D();
-const PARKED_SCALE = 0.0001; // "deleted" instances are scaled to ~0 and parked far below the ground
+import { AnimatedCharacter } from '@/core/AnimatedCharacter';
 
 /** Base world-space height (before a spawn's own `scale` multiplier) — keeps basic enemies a bit smaller than the player, elites towering via the existing scale range. */
 const ENEMY_BASE_HEIGHT = 1.6;
-
-// Fase 3: real baked animation (VAT) instead of a procedural fake — see
-// VATBaker. Still one InstancedMesh, still no per-instance
-// Skeleton/AnimationMixer; the GPU samples a precomputed position-delta
-// texture instead. 24 frames/clip keeps the texture small while staying
-// visually smooth at this game's zoom level.
-const VAT_CLIP_NAMES = ['Idle', 'Run'] as const;
-const VAT_FRAMES_PER_CLIP = 24;
 
 export const enum EnemyKind {
   Basic = 0,
@@ -45,23 +31,23 @@ export interface EnemySpawnParams {
 export type RangedAttackCallback = (x: number, z: number, dirX: number, dirZ: number, damage: number) => void;
 
 /**
- * Struct-of-arrays enemy storage rendered via a single InstancedMesh built
- * from the real Character_Enemy asset: every SkinnedMesh body part is
- * flattened into one static geometry with its material colors baked to a
- * vertex-color attribute (StaticMeshExtractor), and real Idle/Run animation
- * is baked into a position-delta texture (VATBaker) — no per-instance
- * Skeleton/AnimationMixer, since that doesn't scale to thousands of
- * instances. Each instance picks a clip (Run while closing distance, Idle
- * while a ranged enemy holds its attack range) and a texture row computed
- * on the CPU each frame; the vertex shader just does one texel lookup.
- *
- * Entities are never created/destroyed at runtime — only acquired/released
- * from a fixed-capacity ObjectPool. Per-frame work touches only typed
- * arrays; the only "new" calls happen once, in the constructor.
+ * Pooled enemies, each a real cloned/animated character (same AnimatedCharacter
+ * class as Player and TowerField) rather than an InstancedMesh with baked or
+ * procedural animation. An earlier version flattened the character into a
+ * single vertex-colored InstancedMesh and drove it with a vertex-animation
+ * texture for arbitrary-scale performance — mechanically correct (verified
+ * with real baked motion, zero console errors) but the flattening/baking
+ * pipeline visibly degraded how the character looked, which matters more
+ * than raw instance count for a horde the player looks at constantly. This
+ * trades "thousands of enemies" for "every enemy looks exactly as correct
+ * as the player" — capacity stays in the hundreds, each instance is a
+ * genuine SkinnedMesh + AnimationMixer, pre-built once in the constructor
+ * and only repositioned/shown/hidden/crossfaded on spawn/kill/update — no
+ * `new` during gameplay.
  */
 export class EnemyField {
   readonly capacity: number;
-  readonly mesh: THREE.InstancedMesh;
+  readonly root: THREE.Group;
   readonly pool: ObjectPool;
 
   readonly posX: Float32Array;
@@ -79,11 +65,7 @@ export class EnemyField {
   readonly attackCooldown: Float32Array;
   readonly attackTimer: Float32Array;
 
-  private readonly animTime: Float32Array; // CPU-only seconds-within-clip accumulator, per instance
-  private readonly instanceYaw: THREE.InstancedBufferAttribute;
-  private readonly instanceScale: THREE.InstancedBufferAttribute;
-  private readonly instanceAnimRow: THREE.InstancedBufferAttribute;
-  private readonly clips: Record<string, VATClipInfo>;
+  private readonly instances: AnimatedCharacter[];
   private grid: SpatialHashGrid;
   private queryScratch: Int32Array;
 
@@ -105,53 +87,16 @@ export class EnemyField {
     this.attackRange = new Float32Array(capacity);
     this.attackCooldown = new Float32Array(capacity);
     this.attackTimer = new Float32Array(capacity);
-    this.animTime = new Float32Array(capacity);
 
-    const excludeWeapons = new Set<string>(WEAPON_NODE_NAMES);
-    const parts = collectBodyParts(gltf.scene, excludeWeapons);
-    const geometry = extractStaticColoredGeometry(parts);
-
-    const vat = bakeVAT(gltf, parts, VAT_CLIP_NAMES, VAT_FRAMES_PER_CLIP);
-    this.clips = vat.clips;
-    // The static mesh's resting shape must match the VAT's zero-delta point
-    // (first baked frame), not the rig's raw T-pose bind — see VATBaker's
-    // doc comment for why that one-time pose difference alone is too large
-    // for an additive-delta shader to absorb.
-    geometry.setAttribute('position', new THREE.BufferAttribute(vat.referencePositions, 3));
-    groundAlignGeometry(geometry);
-    const bakedScale = scaleGeometryToHeight(geometry, ENEMY_BASE_HEIGHT);
-    scaleVATDeltas(vat, bakedScale);
-
-    const material = new THREE.MeshStandardNodeMaterial({ color: 0xffffff, flatShading: true });
-    material.vertexColors = true;
-
-    this.instanceYaw = new THREE.InstancedBufferAttribute(new Float32Array(capacity), 1);
-    this.instanceScale = new THREE.InstancedBufferAttribute(new Float32Array(capacity).fill(1), 1);
-    this.instanceAnimRow = new THREE.InstancedBufferAttribute(new Float32Array(capacity), 1);
-    this.instanceYaw.setUsage(THREE.DynamicDrawUsage);
-    this.instanceAnimRow.setUsage(THREE.DynamicDrawUsage);
-
-    const yawAttr = instancedBufferAttribute(this.instanceYaw, 'float');
-    const scaleAttr = instancedBufferAttribute(this.instanceScale, 'float');
-    const rowAttr = instancedBufferAttribute(this.instanceAnimRow, 'float');
-
-    const texel = textureLoad(vat.texture, ivec2(int(vertexIndex), int(rowAttr)));
-    const deltaRaw = texel.xyz.mul(scaleAttr);
-    const deltaOriented = rotate(deltaRaw, vec3(0, yawAttr, 0));
-    material.positionNode = positionLocal.add(deltaOriented);
-
-    this.mesh = new THREE.InstancedMesh(geometry, material, capacity);
-    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.mesh.frustumCulled = false;
-
-    // Park every instance off-screen and invisible until spawned.
+    this.root = new THREE.Group();
+    this.instances = new Array(capacity);
     for (let i = 0; i < capacity; i++) {
-      DUMMY.position.set(0, -1000, 0);
-      DUMMY.scale.setScalar(PARKED_SCALE);
-      DUMMY.updateMatrix();
-      this.mesh.setMatrixAt(i, DUMMY.matrix);
+      const inst = new AnimatedCharacter(gltf, ENEMY_BASE_HEIGHT, null); // bare-handed — no weapon prop for the horde
+      inst.root.visible = false;
+      inst.play('Idle', 0);
+      this.root.add(inst.root);
+      this.instances[i] = inst;
     }
-    this.mesh.instanceMatrix.needsUpdate = true;
 
     this.grid = new SpatialHashGrid(worldSize, worldSize, 3, capacity);
     this.queryScratch = new Int32Array(256);
@@ -176,25 +121,18 @@ export class EnemyField {
     this.attackCooldown[idx] = p.attackCooldown ?? 1;
     this.attackTimer[idx] = Math.random() * this.attackCooldown[idx]; // desync volleys fired by simultaneously-spawned ranged enemies
 
-    const idleClip = this.clips.Idle;
-    this.animTime[idx] = Math.random() * idleClip.duration; // desync so a freshly-spawned horde doesn't bob/step in unison
-    this.instanceScale.setX(idx, p.scale);
-    this.instanceScale.needsUpdate = true;
-
-    DUMMY.position.set(p.x, 0.5 * p.scale, p.z);
-    DUMMY.scale.setScalar(p.scale);
-    DUMMY.rotation.set(0, 0, 0);
-    DUMMY.updateMatrix();
-    this.mesh.setMatrixAt(idx, DUMMY.matrix);
+    const inst = this.instances[idx];
+    inst.root.position.set(p.x, 0, p.z);
+    inst.root.scale.setScalar(inst.baseScale * p.scale);
+    inst.root.rotation.y = Math.random() * Math.PI * 2;
+    inst.root.visible = true;
+    inst.play('Idle', 0);
     return idx;
   }
 
   kill(idx: number): void {
     this.pool.release(idx);
-    DUMMY.position.set(0, -1000, 0);
-    DUMMY.scale.setScalar(PARKED_SCALE);
-    DUMMY.updateMatrix();
-    this.mesh.setMatrixAt(idx, DUMMY.matrix);
+    this.instances[idx].root.visible = false;
   }
 
   /** Clears every live enemy — used when a wave ends so the next attempt doesn't inherit the prior horde. */
@@ -205,21 +143,19 @@ export class EnemyField {
       this.kill(alive[count - 1]);
       count = this.pool.liveCount;
     }
-    this.mesh.instanceMatrix.needsUpdate = true;
   }
 
   /**
    * Seeks every live enemy toward (targetX, targetZ) — except ranged kinds,
    * which stop at attackRange and fire via onRangedAttack instead — pushes
-   * them out of any overlapping obstacle, integrates position, advances
-   * each instance's VAT playback, and rebuilds the spatial grid. All
-   * scratch state is pre-allocated; no `new` here.
+   * them out of any overlapping obstacle, integrates position, crossfades
+   * each instance's Run/Idle animation to match its movement state, and
+   * rebuilds the spatial grid. All scratch state is pre-allocated; no
+   * `new` here.
    */
   update(dt: number, targetX: number, targetZ: number, obstacles: ObstacleBuffer, onRangedAttack: RangedAttackCallback): void {
     const alive = this.pool.alive;
     const count = this.pool.liveCount;
-    const idleClip = this.clips.Idle;
-    const runClip = this.clips.Run;
 
     this.grid.clear();
 
@@ -269,25 +205,14 @@ export class EnemyField {
 
       this.grid.insert(idx, this.posX[idx], this.posZ[idx]);
 
-      const scale = this.scale[idx];
       const yaw = Math.atan2(dirX, dirZ);
-      DUMMY.position.set(this.posX[idx], 0.5 * scale, this.posZ[idx]);
-      DUMMY.rotation.y = yaw;
-      DUMMY.scale.setScalar(scale);
-      DUMMY.updateMatrix();
-      this.mesh.setMatrixAt(idx, DUMMY.matrix);
-      this.instanceYaw.setX(idx, yaw);
-
-      const activeClip = inAttackRange ? idleClip : runClip;
-      this.animTime[idx] += dt;
-      if (this.animTime[idx] >= activeClip.duration) this.animTime[idx] %= activeClip.duration;
-      const frame = Math.min(activeClip.frameCount - 1, Math.floor((this.animTime[idx] / activeClip.duration) * activeClip.frameCount));
-      this.instanceAnimRow.setX(idx, activeClip.startRow + frame);
+      const inst = this.instances[idx];
+      inst.root.position.x = this.posX[idx];
+      inst.root.position.z = this.posZ[idx];
+      inst.root.rotation.y = yaw;
+      inst.play(inAttackRange ? 'Idle' : 'Run');
+      inst.update(dt);
     }
-
-    this.mesh.instanceMatrix.needsUpdate = true;
-    this.instanceYaw.needsUpdate = true;
-    this.instanceAnimRow.needsUpdate = true;
   }
 
   /** Writes up to out.length nearby live enemy indices into `out`, returns count. */
