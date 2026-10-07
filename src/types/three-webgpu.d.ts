@@ -43,7 +43,7 @@ declare module 'three/webgpu' {
 // enemy horde). Node objects are chainable and loosely typed on purpose;
 // the real TSL type graph is far more elaborate than is worth modeling here.
 declare module 'three/tsl' {
-  import { InstancedBufferAttribute, BufferAttribute } from 'three';
+  import { InstancedBufferAttribute, BufferAttribute, Texture } from 'three';
 
   export interface TSLNode {
     add(v: TSLNode | number): TSLNode;
@@ -53,6 +53,7 @@ declare module 'three/tsl' {
     negate(): TSLNode;
     sin(): TSLNode;
     cos(): TSLNode;
+    floor(): TSLNode;
     toVar(name?: string): TSLNode;
     readonly x: TSLNode;
     readonly y: TSLNode;
@@ -67,13 +68,20 @@ declare module 'three/tsl' {
   export const normalLocal: TSLNode;
   export const time: TSLNode;
   export const instanceIndex: TSLNode;
+  export const vertexIndex: TSLNode;
 
   export function sin(v: TSLNode | number): TSLNode;
   export function cos(v: TSLNode | number): TSLNode;
+  export function floor(v: TSLNode | number): TSLNode;
+  export function mod(a: TSLNode | number, b: TSLNode | number): TSLNode;
   export function float(v: number | TSLNode): TSLNode;
+  export function int(v: number | TSLNode): TSLNode;
+  export function uint(v: number | TSLNode): TSLNode;
   export function vec2(...args: Array<number | TSLNode>): TSLNode;
   export function vec3(...args: Array<number | TSLNode>): TSLNode;
   export function vec4(...args: Array<number | TSLNode>): TSLNode;
+  export function ivec2(...args: Array<number | TSLNode>): TSLNode;
+  export function ivec3(...args: Array<number | TSLNode>): TSLNode;
   export function mix(a: TSLNode | number, b: TSLNode | number, t: TSLNode | number): TSLNode;
   export function rotate(position: TSLNode, rotation: TSLNode): TSLNode;
   export function attribute(name: string, type?: string): TSLNode;
@@ -90,4 +98,6 @@ declare module 'three/tsl' {
     offset?: number,
   ): TSLNode;
   export function uniform(value: number | TSLNode): TSLNode;
+  export function texture(tex: Texture, uv?: TSLNode): TSLNode;
+  export function textureLoad(tex: Texture, uv?: TSLNode): TSLNode;
 }

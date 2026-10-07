@@ -11,30 +11,42 @@ function isUnderExcludedName(obj: THREE.Object3D, excludeNames: ReadonlySet<stri
 }
 
 /**
+ * Ordered list of a character's body-part meshes (weapon groups excluded),
+ * in traversal order. Shared by extractStaticColoredGeometry (builds the
+ * merged render geometry) and VATBaker (samples each part's own skinning
+ * per-vertex) so the two processes agree on vertex order/offsets without
+ * either one re-deriving the other's filtering logic.
+ */
+export function collectBodyParts(root: THREE.Object3D, excludeNames: ReadonlySet<string> = new Set()): THREE.Mesh[] {
+  root.updateMatrixWorld(true);
+  const parts: THREE.Mesh[] = [];
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    if (isUnderExcludedName(obj, excludeNames)) return;
+    if (!mesh.geometry.getAttribute('position') || !mesh.geometry.getAttribute('normal')) return;
+    parts.push(mesh);
+  });
+  return parts;
+}
+
+/**
  * Flattens a multi-mesh, multi-material skinned character (18 SkinnedMesh
  * parts, 10 flat-color materials, no textures) into ONE static geometry
  * suitable for a single InstancedMesh draw call. Each part's flat material
  * color (or existing per-vertex color, if a part already has one) is baked
  * into a 'color' vertex attribute so a single `vertexColors: true` material
  * reproduces the original multi-colored look without per-part materials.
- * Skinning attributes are dropped — the result is a plain static mesh in
- * bind-pose shape, animated procedurally rather than via Skeleton/Mixer.
  * Call once at load time, never per frame.
  */
-export function extractStaticColoredGeometry(root: THREE.Object3D, excludeNames: ReadonlySet<string> = new Set()): THREE.BufferGeometry {
-  root.updateMatrixWorld(true);
-  const parts: THREE.BufferGeometry[] = [];
+export function extractStaticColoredGeometry(parts: readonly THREE.Mesh[]): THREE.BufferGeometry {
+  const geometries: THREE.BufferGeometry[] = [];
   const tmpColor = new THREE.Color();
 
-  root.traverse((obj) => {
-    const mesh = obj as THREE.Mesh;
-    if (!mesh.isMesh) return;
-    if (isUnderExcludedName(obj, excludeNames)) return;
-
+  for (const mesh of parts) {
     const src = mesh.geometry;
     const position = src.getAttribute('position');
     const normal = src.getAttribute('normal');
-    if (!position || !normal) return; // shouldn't happen for this asset family, but skip defensively
 
     const part = new THREE.BufferGeometry();
     part.setAttribute('position', position.clone());
@@ -56,11 +68,14 @@ export function extractStaticColoredGeometry(root: THREE.Object3D, excludeNames:
       part.setAttribute('color', new THREE.BufferAttribute(colorArr, 3));
     }
 
+    // Body-part nodes on this character rig sit at identity world transform
+    // (shape comes entirely from skinning) — applying it is a no-op today
+    // but keeps this correct if that ever stops being true.
     part.applyMatrix4(mesh.matrixWorld);
-    parts.push(part);
-  });
+    geometries.push(part);
+  }
 
-  const merged = mergeGeometries(parts, false);
+  const merged = mergeGeometries(geometries, false);
   if (!merged) throw new Error('extractStaticColoredGeometry: mergeGeometries failed — check attribute consistency across parts');
   merged.computeBoundingSphere();
   merged.computeBoundingBox();
@@ -76,14 +91,15 @@ export function groundAlignGeometry(geometry: THREE.BufferGeometry): void {
   geometry.computeBoundingSphere();
 }
 
-/** Uniformly scales `geometry` in place so its current bounding-box height becomes `targetHeight`. */
-export function scaleGeometryToHeight(geometry: THREE.BufferGeometry, targetHeight: number): void {
+/** Uniformly scales `geometry` in place so its current bounding-box height becomes `targetHeight`. Returns the scale factor applied, so callers can keep a separately-baked VAT texture (in original units) consistent. */
+export function scaleGeometryToHeight(geometry: THREE.BufferGeometry, targetHeight: number): number {
   geometry.computeBoundingBox();
   const box = geometry.boundingBox!;
   const height = box.max.y - box.min.y;
-  if (height <= 0) return;
+  if (height <= 0) return 1;
   const scale = targetHeight / height;
   geometry.scale(scale, scale, scale);
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
+  return scale;
 }

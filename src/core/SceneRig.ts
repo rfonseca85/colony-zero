@@ -34,8 +34,10 @@ export class SceneRig {
       0.1,
       500,
     );
-    // Top-down isometric-ish angle: elevated and pulled back, looking at origin.
-    this.camera.position.set(0, 34, 24);
+    // True isometric-style angle (~30° above the horizon, not near-top-down)
+    // so character/structure silhouettes actually read as upright and 3D
+    // instead of flattening into top-down sprites.
+    this.camera.position.set(0, 23, 40);
     this.camera.lookAt(0, 0, 0);
 
     const hemi = new THREE.HemisphereLight(0xcfe8d8, 0x30261a, 1.1);
@@ -49,7 +51,7 @@ export class SceneRig {
 
   /** Follows a target on the XZ plane while preserving the fixed camera angle/zoom. */
   follow(targetX: number, targetZ: number): void {
-    this.camera.position.set(targetX, 34, targetZ + 24);
+    this.camera.position.set(targetX, 23, targetZ + 40);
     this.camera.lookAt(targetX, 0, targetZ);
   }
 
